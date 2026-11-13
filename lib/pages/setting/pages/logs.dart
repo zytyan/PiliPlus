@@ -1,5 +1,6 @@
 import 'dart:async' show Timer;
 import 'dart:convert' show jsonDecode;
+import 'dart:io' show Platform;
 
 import 'package:PiliPlus/common/constants.dart';
 import 'package:PiliPlus/common/widgets/button/icon_button.dart';
@@ -15,6 +16,7 @@ import 'package:PiliPlus/utils/utils.dart';
 import 'package:catcher_2/catcher_2.dart';
 import 'package:catcher_2/utils/log_printer.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:material_ui/material_ui.dart';
 
 const _snackBarDisplayDuration = Duration(seconds: 1);
@@ -103,6 +105,21 @@ class _LogsPageState extends State<LogsPage> {
     }
   }
 
+  Future<void> copyOrientationDiagnostics() async {
+    try {
+      final log = await const MethodChannel(
+        'com.example.piliplus/orientation',
+      ).invokeMethod<String>('getDiagnostics');
+      Utils.copyText(log ?? '暂无方向诊断记录');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('读取方向诊断失败：$e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final padding = MediaQuery.viewPaddingOf(context);
@@ -143,6 +160,11 @@ class _LogsPageState extends State<LogsPage> {
                 onTap: copyLogs,
                 child: const Text('复制日志'),
               ),
+              if (Platform.isIOS)
+                PopupMenuItem(
+                  onTap: copyOrientationDiagnostics,
+                  child: const Text('复制方向诊断'),
+                ),
               PopupMenuItem(
                 onTap: () =>
                     PageUtils.launchURL('${Constants.sourceCodeUrl}/issues'),

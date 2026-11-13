@@ -25,6 +25,7 @@ import UIKit
         $0.activationState == .foregroundActive || $0.activationState == .foregroundInactive
       }) as? UIWindowScene)
     let sceneWindow = (scene?.delegate as? FlutterSceneDelegate)?.window
+    (scene?.delegate as? SceneDelegate)?.recordOrientation("app orientation query")
     let controller = (sceneWindow?.rootViewController
       ?? window?.rootViewController
       ?? self.window?.rootViewController) as? FlutterViewController
@@ -35,6 +36,9 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "OrientationDiagnostics") {
+      SceneDelegate.registerOrientationDiagnostics(with: registrar)
+    }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "PipPlugin") {
       PipPlugin.register(with: registrar)
     }
