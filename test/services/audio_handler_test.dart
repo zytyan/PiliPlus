@@ -62,8 +62,12 @@ void main() {
     var previous = 0;
     var next = 0;
     handler
-      ..onSkipToPrevious = () => previous++
-      ..onSkipToNext = () => next++;
+      ..onSkipToPrevious = () {
+        previous++;
+      }
+      ..onSkipToNext = () {
+        next++;
+      };
     update(PlayerStatus.playing);
     expect(handler.playbackState.value.controls.map((c) => c.action), [
       MediaAction.skipToPrevious,
