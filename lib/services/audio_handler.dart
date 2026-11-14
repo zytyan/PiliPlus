@@ -267,7 +267,12 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
             _fastForward,
         ],
         playing: playing,
-        systemActions: const {.seek},
+        // iOS may send play, pause or toggle independently of the displayed
+        // icon. In particular, the Darwin plugin disables togglePlayPauseCommand
+        // unless playPause is explicitly present in the action bits.
+        systemActions: defaultTargetPlatform == TargetPlatform.iOS
+            ? const {.seek, .play, .pause, .playPause}
+            : const {.seek},
       ),
     );
     if (Platform.isAndroid &&

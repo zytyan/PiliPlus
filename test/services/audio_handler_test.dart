@@ -106,6 +106,18 @@ void main() {
     expect(handler.playbackState.value.processingState, AudioProcessingState.ready);
   });
 
+  test('iOS play, pause and toggle remain enabled in both playback states', () {
+    for (final status in [PlayerStatus.playing, PlayerStatus.paused]) {
+      update(status);
+      expect(handler.playbackState.value.systemActions, containsAll([
+        MediaAction.play,
+        MediaAction.pause,
+        MediaAction.playPause,
+        MediaAction.seek,
+      ]));
+    }
+  });
+
   test('subsecond seeks and completion are published', () {
     update(PlayerStatus.paused, ms: 10100);
     update(PlayerStatus.paused, ms: 10900);
