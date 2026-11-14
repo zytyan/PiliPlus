@@ -23,7 +23,8 @@ import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_service_mpris/audio_service_mpris.dart';
 import 'package:collection/collection.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart'
+    show kDebugMode, defaultTargetPlatform, TargetPlatform;
 import 'package:get/get_core/src/get_main.dart';
 import 'package:get/get_instance/src/extension_instance.dart';
 import 'package:jni/jni.dart' show JStringExtension;
@@ -62,6 +63,7 @@ typedef _StatusConfig = (
   bool isBuffering,
   bool isLive,
   double speed,
+  bool isAudioPlayer,
 );
 
 class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
@@ -172,6 +174,20 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
     if (!mediaItem.isClosed) mediaItem.add(newMediaItem);
   }
 
+  void updateDuration(Duration duration, String herotag) {
+    final current = mediaItem.value;
+    if (duration <= Duration.zero ||
+        current == null ||
+        !current.id.endsWith(herotag) ||
+        current.duration == duration) {
+      return;
+    }
+    final updated = current.copyWith(duration: duration);
+    final index = _item.indexWhere((item) => item.id == current.id);
+    if (index != -1) _item[index] = updated;
+    setMediaItem(updated);
+  }
+
   Duration? _lastPos;
   _StatusConfig? _lastConfig;
   void onUpdateState(
@@ -181,23 +197,19 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
     required Duration position,
     required double speed,
     String? debugLabel,
+    bool isAudioPlayer = false,
   }) {
     if (!enableBackgroundPlay || _item.isEmpty) {
       return;
     }
 
-    if (onPlay != null && debugLabel == 'onVideoPaused') return;
+    // The video underneath the audio page can still emit delayed events.
+    if (onPlay != null && !isAudioPlayer) return;
 
-    final newConfig = (status, isBuffering, isLive, speed);
-    if (_lastConfig == newConfig) {
-      if (_lastPos != null) {
-        final pos = position.inSeconds;
-        final lastPos = _lastPos!.inSeconds;
-        _lastPos = position;
-        if (pos == lastPos && pos != 0) return;
-      }
-    }
+    final newConfig = (status, isBuffering, isLive, speed, isAudioPlayer);
+    if (_lastConfig == newConfig && _lastPos == position) return;
     _lastConfig = newConfig;
+    _lastPos = position;
 
     final AudioProcessingState processingState;
     final bool playing;
@@ -209,7 +221,7 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
         playing = true;
         processingState = isBuffering ? .buffering : .ready;
       case .paused:
-        playing = isBuffering;
+        playing = false;
         processingState = isBuffering ? .buffering : .ready;
     }
     _updateState(
@@ -232,11 +244,27 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
       playbackState.value.copyWith(
         processingState: state,
         updatePosition: position,
-        speed: speed,
+        // audio_service's Darwin implementation derives the system clock rate
+        // from playing/speed, without considering processingState.
+        speed: defaultTargetPlatform == TargetPlatform.iOS && state == .buffering
+            ? 0
+            : speed,
         controls: [
-          if (isLive) _refresh else _rewind,
+          if (isLive)
+            _refresh
+          else if (defaultTargetPlatform == TargetPlatform.iOS &&
+              onSkipToPrevious != null)
+            MediaControl.skipToPrevious
+          else
+            _rewind,
           if (playing) _pause else _play,
-          if (isLive) _dm else _fastForward,
+          if (isLive)
+            _dm
+          else if (defaultTargetPlatform == TargetPlatform.iOS &&
+              onSkipToNext != null)
+            MediaControl.skipToNext
+          else
+            _fastForward,
         ],
         playing: playing,
         systemActions: const {.seek},
@@ -259,8 +287,10 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
     String herotag, {
     String? artist,
     String? cover,
+    bool isAudioPlayer = false,
   }) {
     if (!enableBackgroundPlay) return;
+    if (onPlay != null && !isAudioPlayer) return;
     // if (kDebugMode) {
     //   debugPrint('当前调用栈为：');
     //   debugPrint(StackTrace.current);
@@ -342,7 +372,11 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
       default:
         return;
     }
+    // Keep one current item per page, rather than every track ever played.
+    _item.removeWhere((item) => item.id.endsWith(herotag));
     _item.add(mediaItem);
+    _lastConfig = null;
+    _lastPos = null;
     setMediaItem(mediaItem);
   }
 
@@ -352,6 +386,7 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
     if (_item.isNotEmpty) {
       _item.removeWhere((item) => item.id.endsWith(herotag));
     }
+    if (onPlay != null) return;
     if (_item.isNotEmpty) {
       setMediaItem(_item.last);
       playbackState.add(

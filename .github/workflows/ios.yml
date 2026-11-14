@@ -34,6 +34,12 @@ jobs:
         shell: pwsh
         run: lib/scripts/patch.ps1 iOS
 
+      - name: Check audio controls
+        run: |
+          dart format lib/services/audio_handler.dart lib/services/audio_session.dart lib/pages/audio/controller.dart test/services/audio_handler_test.dart
+          flutter analyze --no-pub --no-fatal-infos lib/services/audio_handler.dart lib/services/audio_session.dart lib/pages/audio/controller.dart test/services/audio_handler_test.dart
+          flutter test --no-pub test/services/audio_handler_test.dart
+
       - name: Build iOS
         run: |
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub

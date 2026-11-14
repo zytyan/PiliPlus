@@ -51,6 +51,7 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:synchronized/synchronized.dart';
 
 class AudioController extends GetxController
     with
@@ -114,20 +115,8 @@ class AudioController extends GetxController
   double? _lastVolume;
   late final RxDouble desktopVolume = RxDouble(Pref.desktopVolume);
 
-  Timer? _statusTimer;
-
-  void _startStatusTimer() {
-    _statusTimer?.cancel();
-    _statusTimer = Timer(
-      const Duration(milliseconds: 500),
-      _updatePlaybackState,
-    );
-  }
-
-  void _stopStatusTimer() {
-    _statusTimer?.cancel();
-    _statusTimer = null;
-  }
+  final _mediaLock = Lock();
+  int _playRequest = 0;
 
   void toggleVolume() {
     if (_lastVolume == null) {
@@ -220,8 +209,9 @@ class AudioController extends GetxController
 
   Future<void>? onPlay() async {
     if (player == null) return;
-    await player?.play();
     await audioSessionHandler?.setActive(true);
+    if (isClosed) return;
+    await player?.play();
   }
 
   Future<void>? onPause() async {
@@ -239,9 +229,17 @@ class AudioController extends GetxController
     }
   }
 
-  Future<void>? onSeek(Duration duration) {
-    _updatePlaybackState(position: duration);
-    return player?.seek(duration);
+  Future<void> onSeek(Duration position) async {
+    final player = this.player;
+    if (player == null || isClosed) return;
+    final end = player.state.duration;
+    final target = position < Duration.zero
+        ? Duration.zero
+        : end > Duration.zero && position > end
+        ? end
+        : position;
+    await player.seek(target);
+    if (!isClosed) _updatePlaybackState(position: target);
   }
 
   void _updateCurrItem(DetailItem item) {
@@ -253,7 +251,13 @@ class AudioController extends GetxController
       item,
       (subId.firstOrNull ?? oid).toInt(),
       hashCode.toString(),
+      isAudioPlayer: true,
     );
+    videoPlayerServiceHandler?.updateDuration(
+      player?.state.duration ?? Duration.zero,
+      hashCode.toString(),
+    );
+    _updatePlaybackState();
   }
 
   Future<void> _queryPlayList({
@@ -315,22 +319,24 @@ class AudioController extends GetxController
   }
 
   Future<bool> _queryPlayUrl() async {
+    final request = ++_playRequest;
     _querySponsorBlock();
     final res = await AudioGrpc.audioPlayUrl(
       itemType: itemType,
       oid: oid,
       subId: subId,
     );
+    if (isClosed || request != _playRequest) return false;
     if (res case Success(:final response)) {
-      _onPlay(response);
-      return true;
+      final opened = await _onPlay(response, request);
+      return opened && !isClosed && request == _playRequest;
     } else {
       res.toast();
       return false;
     }
   }
 
-  void _onPlay(PlayURLResp data) {
+  Future<bool> _onPlay(PlayURLResp data, int request) async {
     final PlayInfo? playInfo = data.playerInfo.values.firstOrNull;
     if (playInfo != null) {
       http_model.Volume? volume;
@@ -350,32 +356,43 @@ class AudioController extends GetxController
         final playDash = playInfo.playDash;
         final audios = playDash.audio;
         if (audios.isEmpty) {
-          return;
+          return false;
         }
         position.value = 0;
         final audio = audios.findTargetMedia((e) => e.id, cacheAudioQa);
-        _onOpenMedia(VideoUtils.getCdnUrl(audio.playUrls), volume: volume);
+        return _onOpenMedia(
+          VideoUtils.getCdnUrl(audio.playUrls),
+          volume: volume,
+          request: request,
+        );
       } else if (playInfo.hasPlayUrl()) {
         final playUrl = playInfo.playUrl;
         final durls = playUrl.durl;
         if (durls.isEmpty) {
-          return;
+          return false;
         }
         final durl = durls.first;
         position.value = 0;
-        _onOpenMedia(VideoUtils.getCdnUrl(durl.playUrls), volume: volume);
+        return _onOpenMedia(
+          VideoUtils.getCdnUrl(durl.playUrls),
+          volume: volume,
+          request: request,
+        );
       }
     }
+    return false;
   }
 
-  Future<void> _onOpenMedia(
+  Future<bool> _onOpenMedia(
     String url, {
     String ua = Constants.userAgentApp,
     String? referer,
     http_model.Volume? volume,
-  }) async {
+    int request = 0,
+  }) => _mediaLock.synchronized(() async {
+    if (isClosed || request != _playRequest) return false;
     await _initPlayerIfNeeded();
-    if (player == null) return;
+    if (isClosed || player == null || request != _playRequest) return false;
     player!.setMediaHeader(
       userAgent: ua,
       // mpv cannot clear referer option
@@ -385,19 +402,24 @@ class AudioController extends GetxController
       Media(url, start: _start, extras: audioFilterExtras(volume)),
       play: false,
     );
+    if (isClosed || request != _playRequest) return false;
     await onPlay();
     _start = null;
-  }
+    return true;
+  });
 
   PlayerStatus _playerStatus = .paused;
   void _updatePlaybackState({Duration? position, String? debugLabel}) {
+    final player = this.player;
+    if (player == null || isClosed) return;
     videoPlayerServiceHandler?.onUpdateState(
       _playerStatus,
+      player.state.buffering,
       false,
-      false,
-      position: position ?? player!.state.position,
+      position: position ?? player.state.position,
       speed: speed,
       debugLabel: debugLabel,
+      isAudioPlayer: true,
     );
   }
 
@@ -429,7 +451,13 @@ class AudioController extends GetxController
         if (isDragging) return;
         final seconds = position.inSeconds;
         if (seconds != this.position.value) {
-          if (seconds == 0 && _playerStatus.isPlaying) {
+          final systemPosition =
+              videoPlayerServiceHandler?.playbackState.value.position;
+          // The system projects normal progress itself. Resync discontinuities
+          // (including SponsorBlock seeks) without publishing every frame.
+          if (seconds == 0 ||
+              systemPosition == null ||
+              (position - systemPosition).inMilliseconds.abs() > 1000) {
             _updatePlaybackState(position: position);
           }
           this.position.value = seconds;
@@ -438,22 +466,24 @@ class AudioController extends GetxController
       }),
       stream.duration.listen((duration) {
         this.duration.value = duration.inSeconds;
+        videoPlayerServiceHandler?.updateDuration(
+          duration,
+          hashCode.toString(),
+        );
       }),
       stream.playing.listen((playing) {
         if (playing) {
           animController.forward();
           _playerStatus = .playing;
-          _stopStatusTimer();
           _updatePlaybackState();
         } else {
           animController.reverse();
           _playerStatus = .paused;
-          _startStatusTimer();
+          _updatePlaybackState();
         }
       }),
       stream.buffering.listen((bool buffering) {
         if (!_playerStatus.isCompleted) {
-          _stopStatusTimer();
           _updatePlaybackState();
         }
       }),
@@ -461,7 +491,7 @@ class AudioController extends GetxController
         _videoDetailController?.playedTime = player!.state.duration;
         if (completed) {
           _playerStatus = .completed;
-          _startStatusTimer();
+          _updatePlaybackState();
           if (shutdownTimerService.isWaiting) {
             shutdownTimerService.handleWaiting();
           } else {
@@ -832,7 +862,7 @@ class AudioController extends GetxController
 
   @override
   void onClose() {
-    _stopStatusTimer();
+    ++_playRequest;
     shutdownTimerService
       ..onPause = null
       ..isPlaying = null

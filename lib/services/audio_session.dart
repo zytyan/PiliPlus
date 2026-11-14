@@ -4,19 +4,21 @@ import 'package:audio_session/audio_session.dart';
 
 class AudioSessionHandler {
   late AudioSession _session;
+  late final Future<void> _ready;
   bool _shouldResume = false;
 
-  Future<bool> setActive(bool active) {
+  Future<bool> setActive(bool active) async {
+    await _ready;
     return _session.setActive(active);
   }
 
   AudioSessionHandler() {
-    initSession();
+    _ready = initSession();
   }
 
   Future<void> initSession() async {
     _session = await AudioSession.instance;
-    _session.configure(const AudioSessionConfiguration.music());
+    await _session.configure(const AudioSessionConfiguration.music());
 
     _session.interruptionEventStream.listen(_onInterrupted);
 
@@ -29,6 +31,7 @@ class AudioSessionHandler {
 
   void _onInterrupted(AudioInterruptionEvent event) {
     if (event.begin) {
+      _shouldResume = false;
       final player = PlPlayerController.instance;
       switch (event.type) {
         case .duck:
